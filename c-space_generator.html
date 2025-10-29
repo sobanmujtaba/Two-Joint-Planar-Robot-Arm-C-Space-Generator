@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Two-Joint Planar Robot Arm C-Space Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the canvases */
+        .workspace-canvas {
+            border: 2px solid #3b82f6;
+            background-color: #f3f4f6;
+        }
+        .cspace-canvas {
+            border: 2px solid #10b981;
+        }
+        /* Mobile-first centering and layout */
+        .container {
+            max-width: 100vw;
+            padding: 1rem;
+        }
+        @media (min-width: 1024px) {
+            .container {
+                max-width: 1200px;
+                padding: 2rem;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans">
+
+    <div class="container mx-auto">
+        <h1 class="text-3xl font-bold text-center text-gray-900 mb-6 mt-2">Two-Joint Planar Robot Arm C-Space Generator</h1>
+
+        <!-- Controls -->
+        <div class="flex flex-wrap justify-center items-center gap-4 mb-6">
+            
+            <!-- Sliders container -->
+            <div class="bg-gray-200 p-3 rounded-xl shadow-inner flex flex-col space-y-3 w-full sm:w-80">
+                <div>
+                    <label for="link1Slider" class="text-sm font-semibold text-gray-700 block mb-1">Link 1 Length: <span id="link1Value">150</span> px</label>
+                    <input type="range" id="link1Slider" min="50" max="200" value="150" class="w-full cursor-pointer appearance-none h-2 bg-indigo-300 rounded-full" style="background-color: #a5b4fc;">
+                </div>
+                <div>
+                    <label for="link2Slider" class="text-sm font-semibold text-gray-700 block mb-1">Link 2 Length: <span id="link2Value">100</span> px</label>
+                    <input type="range" id="link2Slider" min="50" max="200" value="100" class="w-full cursor-pointer appearance-none h-2 bg-indigo-300 rounded-full" style="background-color: #a5b4fc;">
+                </div>
+            </div>
+            
+            <div class="flex flex-wrap justify-center gap-4">
+                <button id="drawButton" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out">
+                    Start Drawing Obstacle
+                </button>
+                <button id="calculateButton" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out" disabled>
+                    Calculate C-Space
+                </button>
+                <button id="clearButton" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out">
+                    Clear All
+                </button>
+            </div>
+        </div>
+
+        <!-- Status Message -->
+        <p id="statusMessage" class="text-center text-lg font-medium h-6 mb-4">Click "Start Drawing Obstacle" to begin.</p>
+
+        <!-- Canvas Containers -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            
+            <!-- Workspace Canvas (The Real World) -->
+            <div class="bg-white p-4 rounded-xl shadow-lg">
+                <h2 class="text-xl font-semibold mb-3 text-center">Workspace ($x, y$ Plane)</h2>
+                <canvas id="workspaceCanvas" class="workspace-canvas mx-auto" width="400" height="400"></canvas>
+                <p class="text-sm text-gray-500 mt-2 text-center">Click points to define the obstacle polygon. Double-click to finish.</p>
+            </div>
+
+            <!-- C-Space Canvas (Configuration Space) -->
+            <div class="bg-white p-4 rounded-xl shadow-lg">
+                <h2 class="text-xl font-semibold mb-3 text-center">Configuration Space ($\theta_1, \theta_2$)</h2>
+                <canvas id="cspaceCanvas" class="cspace-canvas mx-auto" width="400" height="400"></canvas>
+                <p class="text-sm text-gray-500 mt-2 text-center">The red region shows the forbidden configurations.</p>
+            </div>
+        </div>
+
+        <!-- Footer/Github Link -->
+        <footer class="text-center mt-8 pt-4 text-gray-500 text-sm border-t border-gray-300">
+            Created for Educational Use. Source code available on GitHub: 
+            <a href="https://github.com/sobanmujtaba" target="_blank" class="text-indigo-600 hover:text-indigo-800 font-semibold transition duration-150">
+                @sobanmujtaba
+            </a>
+        </footer>
+    </div>
+
+    <script>
+        // --- CONSTANTS AND STATE ---
+        const WORKSPACE_SIZE = 400;
+        const CSPACE_SIZE = 400;
+        // Link lengths are now mutable variables tied to the sliders
+        let LINK_LENGTH_1 = 150; 
+        let LINK_LENGTH_2 = 100; 
+        const BASE_X = WORKSPACE_SIZE / 2;
+        const BASE_Y = WORKSPACE_SIZE / 2;
+        // Increased resolution for better C-Space detail (100x100 = 10,000 checks)
+        const RESOLUTION = 100; 
+
+        // DOM Elements
+        const workspaceCanvas = document.getElementById('workspaceCanvas');
+        const cspaceCanvas = document.getElementById('cspaceCanvas');
+        const ctxW = workspaceCanvas.getContext('2d');
+        const ctxC = cspaceCanvas.getContext('2d');
+        const statusMessage = document.getElementById('statusMessage');
+        const drawButton = document.getElementById('drawButton');
+        const calculateButton = document.getElementById('calculateButton');
+        const clearButton = document.getElementById('clearButton');
+
+        // New DOM References for Sliders
+        const link1Slider = document.getElementById('link1Slider');
+        const link2Slider = document.getElementById('link2Slider');
+        const link1ValueSpan = document.getElementById('link1Value');
+        const link2ValueSpan = document.getElementById('link2Value');
+
+
+        let isDrawing = false;
+        let obstacles = []; // Stores all finished obstacle polygons (array of arrays of vertices)
+        let currentObstacleVertices = []; // Stores vertices of the polygon currently being drawn
+        let cSpaceObstacle = []; // Array to store collision points (theta1, theta2)
+
+        // --- UTILITY FUNCTIONS ---
+
+        /** Converts degrees to radians. */
+        const degToRad = (deg) => deg * (Math.PI / 180);
+
+        /** Converts C-Space angle (in radians) to Canvas coordinate (0-400). */
+        const angleToCoord = (angle) => (angle / Math.PI) * (CSPACE_SIZE / 2) + (CSPACE_SIZE / 2);
+
+        /**
+         * Checks if a point is inside a polygon using the ray-casting algorithm.
+         * @param {object} p - Point {x, y}
+         * @param {array} polygon - Array of vertices [{x, y}, ...]
+         * @returns {boolean} True if point is inside.
+         */
+        function isPointInPolygon(p, polygon) {
+            let inside = false;
+            for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+                const xi = polygon[i].x, yi = polygon[i].y;
+                const xj = polygon[j].x, yj = polygon[j].y;
+
+                const intersect = ((yi > p.y) !== (yj > p.y)) &&
+                    (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
+                if (intersect) inside = !inside;
+            }
+            return inside;
+        }
+
+        /**
+         * Checks for collision between the 2-link arm and the obstacle polygon.
+         * The arm is discretized into a few points for simpler collision checking.
+         * Now checks against ALL obstacles.
+         * @param {number} theta1 - Joint 1 angle (radians)
+         * @param {number} theta2 - Joint 2 angle (radians)
+         * @param {array} allObstacles - Array of obstacle polygons
+         * @returns {boolean} True if collision occurs.
+         */
+        function checkCollision(theta1, theta2, allObstacles) {
+            if (allObstacles.length === 0) return false;
+
+            // 1. Forward Kinematics - uses the current global LINK_LENGTH_1 and LINK_LENGTH_2
+            const x1 = BASE_X + LINK_LENGTH_1 * Math.cos(theta1);
+            const y1 = BASE_Y + LINK_LENGTH_1 * Math.sin(theta1);
+            const x2 = x1 + LINK_LENGTH_2 * Math.cos(theta1 + theta2);
+            const y2 = y1 + LINK_LENGTH_2 * Math.sin(theta1 + theta2);
+
+            const pointsToCheck = [
+                // Joint points
+                { x: BASE_X, y: BASE_Y }, // Base (fixed)
+                { x: x1, y: y1 },         // Joint 1
+                { x: x2, y: y2 },         // End Effector
+            ];
+
+            // Sample points along Link 1 (10 samples for better precision)
+            for (let i = 0.1; i < 1.0; i += 0.1) {
+                pointsToCheck.push({
+                    x: BASE_X + LINK_LENGTH_1 * i * Math.cos(theta1),
+                    y: BASE_Y + LINK_LENGTH_1 * i * Math.sin(theta1)
+                });
+            }
+
+            // Sample points along Link 2 (10 samples for better precision)
+            for (let i = 0.1; i < 1.0; i += 0.1) {
+                pointsToCheck.push({
+                    x: x1 + LINK_LENGTH_2 * i * Math.cos(theta1 + theta2),
+                    y: y1 + LINK_LENGTH_2 * i * Math.sin(theta1 + theta2)
+                });
+            }
+
+            // 2. Collision Check - Loop through all defined obstacles
+            for (const obstacle of allObstacles) {
+                if (obstacle.length < 3) continue; // Skip invalid polygons
+
+                for (const p of pointsToCheck) {
+                    if (isPointInPolygon(p, obstacle)) {
+                        return true; // Collision detected with ANY obstacle
+                    }
+                }
+            }
+            return false;
+        }
+
+        // --- RENDERING FUNCTIONS ---
+        
+        /** Draws a single polygon with appropriate styling for drawing mode or finished obstacle. */
+        function drawPolygon(vertices, isCurrent = false) {
+            if (vertices.length === 0) return;
+            
+            ctxW.fillStyle = isCurrent ? 'rgba(59, 130, 246, 0.3)' : 'rgba(239, 68, 68, 0.7)'; // Blue transparent for current, Red for finished
+            ctxW.strokeStyle = isCurrent ? '#3b82f6' : '#dc2626';
+            ctxW.lineWidth = isCurrent ? 1 : 2;
+
+            ctxW.beginPath();
+            ctxW.moveTo(vertices[0].x, vertices[0].y);
+            for (let i = 1; i < vertices.length; i++) {
+                ctxW.lineTo(vertices[i].x, vertices[i].y);
+            }
+            if (!isCurrent) {
+                ctxW.closePath(); // Only close finished polygons
+            }
+            ctxW.fill();
+            ctxW.stroke();
+            
+            // Draw vertices
+            ctxW.fillStyle = isCurrent ? '#3b82f6' : '#dc2626';
+            vertices.forEach(v => {
+                ctxW.beginPath();
+                ctxW.arc(v.x, v.y, 4, 0, 2 * Math.PI);
+                ctxW.fill();
+            });
+        }
+
+
+        /** Draws the 2-link arm in the workspace at a given configuration. */
+        function drawArm(theta1, theta2, color = '#3b82f6', lineWidth = 5) {
+            ctxW.save();
+            ctxW.beginPath();
+            ctxW.strokeStyle = color;
+            ctxW.lineWidth = lineWidth;
+            ctxW.lineCap = 'round';
+
+            // Base
+            ctxW.moveTo(BASE_X, BASE_Y);
+
+            // Joint 1 position (End of Link 1)
+            const x1 = BASE_X + LINK_LENGTH_1 * Math.cos(theta1);
+            const y1 = BASE_Y + LINK_LENGTH_1 * Math.sin(theta1);
+            ctxW.lineTo(x1, y1);
+            
+            // Joint 2 position (End Effector)
+            const x2 = x1 + LINK_LENGTH_2 * Math.cos(theta1 + theta2);
+            const y2 = y1 + LINK_LENGTH_2 * Math.sin(theta1 + theta2);
+            ctxW.lineTo(x2, y2);
+
+            ctxW.stroke();
+
+            // Draw joints
+            ctxW.fillStyle = '#1e3a8a'; // Dark blue for joints
+            ctxW.beginPath();
+            ctxW.arc(BASE_X, BASE_Y, 7, 0, 2 * Math.PI); // Base joint
+            ctxW.fill();
+            ctxW.beginPath();
+            ctxW.arc(x1, y1, 7, 0, 2 * Math.PI); // Mid joint
+            ctxW.fill();
+            ctxW.fillStyle = color;
+            ctxW.beginPath();
+            ctxW.arc(x2, y2, 5, 0, 2 * Math.PI); // End effector
+            ctxW.fill();
+
+            ctxW.restore();
+        }
+
+        /** Redraws the entire workspace, including all finished and current obstacles. */
+        function drawWorkspace() {
+            ctxW.clearRect(0, 0, WORKSPACE_SIZE, WORKSPACE_SIZE);
+
+            // Draw all finished obstacles
+            obstacles.forEach(polygon => drawPolygon(polygon, false));
+
+            // Draw the obstacle currently being drawn (in blue/transparent)
+            drawPolygon(currentObstacleVertices, true);
+
+            // Draw the robot arm in a fixed "home" position for reference
+            drawArm(degToRad(45), degToRad(0), '#3b82f6', 6);
+        }
+
+        /** Redraws the entire C-Space. */
+        function drawCSpace() {
+            ctxC.clearRect(0, 0, CSPACE_SIZE, CSPACE_SIZE);
+            
+            // Draw axes and labels
+            ctxC.strokeStyle = '#4b5563';
+            ctxC.lineWidth = 1;
+            ctxC.beginPath();
+            ctxC.moveTo(0, CSPACE_SIZE / 2); // Horizontal axis (theta2 = 0)
+            ctxC.lineTo(CSPACE_SIZE, CSPACE_SIZE / 2);
+            ctxC.moveTo(CSPACE_SIZE / 2, 0); // Vertical axis (theta1 = 0)
+            ctxC.lineTo(CSPACE_SIZE / 2, CSPACE_SIZE);
+            ctxC.stroke();
+
+            ctxC.fillStyle = '#4b5563';
+            ctxC.font = '12px Arial';
+            ctxC.textAlign = 'center';
+            ctxC.fillText('θ₁ (rad)', CSPACE_SIZE - 20, CSPACE_SIZE / 2 + 15);
+            ctxC.fillText('θ₂ (rad)', CSPACE_SIZE / 2, 10);
+            ctxC.fillText('-π', 10, CSPACE_SIZE / 2 + 15);
+            ctxC.fillText('π', CSPACE_SIZE - 10, CSPACE_SIZE / 2 + 15);
+            ctxC.fillText('π', CSPACE_SIZE / 2, 15);
+            ctxC.fillText('-π', CSPACE_SIZE / 2, CSPACE_SIZE - 5);
+
+
+            // Draw C-Space obstacle (C-Obstacle)
+            ctxC.fillStyle = '#dc2626'; // Red for forbidden region
+            cSpaceObstacle.forEach(p => {
+                const x = angleToCoord(p.theta1);
+                const y = angleToCoord(p.theta2);
+
+                // Draw a small square for the forbidden region
+                const pixelSize = CSPACE_SIZE / RESOLUTION;
+                ctxC.fillRect(x - pixelSize/2, y - pixelSize/2, pixelSize, pixelSize);
+            });
+        }
+
+        // --- EVENT HANDLERS ---
+
+        /** Handles clicks for drawing the obstacle. */
+        function handleWorkspaceClick(event) {
+            if (!isDrawing) return;
+
+            const rect = workspaceCanvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            currentObstacleVertices.push({ x, y });
+            drawWorkspace(); // Redraw the polygon
+        }
+
+        /** Handles changes from the link length sliders. */
+        function handleLinkLengthChange() {
+            // Update the global link length variables
+            LINK_LENGTH_1 = parseInt(link1Slider.value);
+            LINK_LENGTH_2 = parseInt(link2Slider.value);
+            
+            // Update the span texts
+            link1ValueSpan.textContent = LINK_LENGTH_1;
+            link2ValueSpan.textContent = LINK_LENGTH_2;
+
+            // Redraw the workspace immediately to show the new arm size
+            drawWorkspace();
+
+            // Clear C-Space and enable calculation button because the map is now invalid
+            cSpaceObstacle = [];
+            drawCSpace();
+            calculateButton.disabled = false;
+            statusMessage.textContent = 'Robot configuration changed. Click "Calculate C-Space" to re-map the forbidden regions.';
+        }
+
+        /** Calculates the C-Space obstacle. */
+        function calculateCSpace() {
+            if (obstacles.length === 0) {
+                statusMessage.textContent = 'Please draw and finish at least one obstacle (3+ points, then double-click).';
+                return;
+            }
+             if (isDrawing) {
+                statusMessage.textContent = 'Please double-click the canvas to finish the current obstacle before calculating.';
+                return;
+            }
+
+            // Disable buttons and show loading status
+            calculateButton.disabled = true;
+            statusMessage.textContent = 'Calculating C-Space (100x100 grid)... This may take a moment.';
+            cSpaceObstacle = [];
+
+            // Use a timeout to release the UI thread, allowing the status message to update
+            setTimeout(() => {
+                const step = (2 * Math.PI) / RESOLUTION; // Iterate from -PI to PI
+                let collisionsFound = 0;
+                
+                // The combined list of obstacles is simply the 'obstacles' array
+                const allObstaclesForCalc = obstacles;
+
+                for (let i = 0; i <= RESOLUTION; i++) {
+                    const theta1 = -Math.PI + i * step; // -π to π
+                    for (let j = 0; j <= RESOLUTION; j++) {
+                        const theta2 = -Math.PI + j * step; // -π to π
+                        
+                        if (checkCollision(theta1, theta2, allObstaclesForCalc)) {
+                            cSpaceObstacle.push({ theta1, theta2 });
+                            collisionsFound++;
+                        }
+                    }
+                }
+
+                drawCSpace(); // Draw the results
+                calculateButton.disabled = false;
+                statusMessage.textContent = `Calculation complete! Found ${collisionsFound} forbidden configurations (red pixels).`;
+            }, 50); // Small delay
+        }
+
+        /** Clears the workspace and C-Space. */
+        function clearAll() {
+            isDrawing = false;
+            obstacles = [];
+            currentObstacleVertices = [];
+            cSpaceObstacle = [];
+            drawWorkspace();
+            drawCSpace();
+            calculateButton.disabled = true;
+            drawButton.disabled = false;
+            statusMessage.textContent = 'Workspace and C-Space cleared. Click "Start Drawing Obstacle" to begin.';
+        }
+
+        // --- INITIALIZATION ---
+
+        drawButton.addEventListener('click', () => {
+            isDrawing = true;
+            currentObstacleVertices = []; // Start drawing a new polygon
+            drawWorkspace();
+            calculateButton.disabled = true;
+            drawButton.disabled = true;
+            statusMessage.textContent = 'Drawing Mode: Click to add vertices. Double-click when finished.';
+        });
+
+        workspaceCanvas.addEventListener('click', handleWorkspaceClick);
+
+        workspaceCanvas.addEventListener('dblclick', () => {
+            if (isDrawing && currentObstacleVertices.length >= 3) {
+                // Save the finished polygon to the main list
+                obstacles.push(currentObstacleVertices);
+                currentObstacleVertices = []; // Clear the current drawing buffer
+                
+                isDrawing = false; // Stop drawing the current one
+                drawWorkspace(); // Redraw, showing the new obstacle as finished
+
+                calculateButton.disabled = false;
+                drawButton.disabled = false; // Re-enable draw button to start a new one
+                statusMessage.textContent = `Obstacle ${obstacles.length} finished. Click "Start Drawing Obstacle" to draw another, or "Calculate C-Space" to proceed.`;
+            } else if (isDrawing && currentObstacleVertices.length < 3) {
+                statusMessage.textContent = 'Obstacle must have at least 3 vertices (click more points).';
+            }
+        });
+
+        calculateButton.addEventListener('click', calculateCSpace);
+        clearButton.addEventListener('click', clearAll);
+
+        // Add event listeners for the new sliders
+        link1Slider.addEventListener('input', handleLinkLengthChange);
+        link2Slider.addEventListener('input', handleLinkLengthChange);
+
+        // Initialize link lengths based on slider values and draw the initial state
+        LINK_LENGTH_1 = parseInt(link1Slider.value);
+        LINK_LENGTH_2 = parseInt(link2Slider.value);
+        drawWorkspace();
+        drawCSpace();
+
+    </script>
+</body>
+</html>
