@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2-Link C-Space Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the canvases */
+        .workspace-canvas {
+            border: 2px solid #3b82f6;
+            background-color: #f3f4f6;
+            cursor: crosshair; /* Indicate interactivity */
+        }
+        .cspace-canvas {
+            border: 2px solid #10b981;
+        }
+        /* Mobile-first centering and layout */
+        .container {
+            max-width: 100vw;
+            padding: 1rem;
+        }
+        @media (min-width: 1024px) {
+            .container {
+                max-width: 1200px;
+                padding: 2rem;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans">
+
+    <div class="container mx-auto">
+        <h1 class="text-3xl font-bold text-center text-gray-900 mb-6 mt-2">2-Link Arm C-Space Generator</h1>
+        
+        <!-- Robot Dimensions (Link Length Sliders) --><div class="bg-white p-4 rounded-xl shadow-md mb-6">
+            <h2 class="text-xl font-semibold mb-3 text-center text-gray-800">Robot Dimensions (Link Lengths)</h2>
+            <div class="flex flex-wrap justify-center gap-6">
+                <!-- Link 1 Slider --><div class="w-full sm:w-1/3 min-w-[200px]">
+                    <label for="link1Length" id="link1Label" class="block text-sm font-medium text-gray-700">Link 1 Length: 150 px</label>
+                    <input type="range" id="link1Length" min="50" max="200" value="150" class="w-full h-2 bg-indigo-100 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <!-- Link 2 Slider --><div class="w-full sm:w-1/3 min-w-[200px]">
+                    <label for="link2Length" id="link2Label" class="block text-sm font-medium text-gray-700">Link 2 Length: 100 px</label>
+                    <input type="range" id="link2Length" min="50" max="200" value="100" class="w-full h-2 bg-indigo-100 rounded-lg appearance-none cursor-pointer">
+                </div>
+            </div>
+        </div>
+
+        <!-- Joint Angle Sliders (New Addition) --><div class="bg-white p-4 rounded-xl shadow-md mb-6">
+            <h2 class="text-xl font-semibold mb-3 text-center text-gray-800">Direct Joint Control (Angles: Internal Angle/Slider Value)</h2>
+            <div class="flex flex-wrap justify-center gap-6">
+                <!-- Theta 1 Slider --><div class="w-full sm:w-1/3 min-w-[200px]">
+                    <label for="theta1Input" id="theta1InputLabel" class="block text-sm font-medium text-gray-700">Theta 1 (θ₁): 0° (Slider value)</label>
+                    <input type="range" id="theta1Input" min="-180" max="180" value="0" class="w-full h-2 bg-pink-300 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <!-- Theta 2 Slider --><div class="w-full sm:w-1/3 min-w-[200px]">
+                    <label for="theta2Input" id="theta2InputLabel" class="block text-sm font-medium text-gray-700">Theta 2 (θ₂): 0° (Slider value)</label>
+                    <input type="range" id="theta2Input" min="-180" max="180" value="0" class="w-full h-2 bg-pink-300 rounded-lg appearance-none cursor-pointer">
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Controls and Angle Display --><div class="flex flex-wrap justify-center gap-4 mb-6">
+            <button id="drawButton" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out">
+                Start Drawing Obstacle
+            </button>
+            <button id="calculateButton" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out" disabled>
+                Calculate C-Space
+            </button>
+            <button id="clearButton" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out">
+                Clear All
+            </button>
+        </div>
+
+        <div id="angleDisplay" class="text-center mb-4 p-3 bg-white rounded-xl shadow-md font-mono text-lg flex justify-center space-x-8">
+            <span id="theta1Display" class="text-indigo-700">θ₁: N/A</span>
+            <span id="theta2Display" class="text-indigo-700">θ₂: N/A</span>
+        </div>
+
+        <!-- Status Message --><p id="statusMessage" class="text-center text-lg font-medium h-6 mb-4">Adjust link lengths, then click "Start Drawing Obstacle".</p>
+
+        <!-- Canvas Containers --><div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            
+            <!-- Workspace Canvas (The Real World) --><div class="bg-white p-4 rounded-xl shadow-lg">
+                <h2 class="text-xl font-semibold mb-3 text-center">Workspace ($x, y$ Plane)</h2>
+                <canvas id="workspaceCanvas" class="workspace-canvas mx-auto" width="400" height="400"></canvas>
+                <p class="text-sm text-gray-500 mt-2 text-center">**Interactive!** Move your mouse/touch over the canvas OR use the sliders above.</p>
+            </div>
+
+            <!-- C-Space Canvas (Configuration Space) --><div class="bg-white p-4 rounded-xl shadow-lg">
+                <h2 class="text-xl font-semibold mb-3 text-center">Configuration Space ($\theta_1, \theta_2$)</h2>
+                <canvas id="cspaceCanvas" class="cspace-canvas mx-auto" width="400" height="400"></canvas>
+                <p class="text-sm text-gray-500 mt-2 text-center">The bright dot shows the arm's current configuration.</p>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- CONSTANTS AND STATE ---
+        const WORKSPACE_SIZE = 400;
+        const CSPACE_SIZE = 400;
+        const BASE_X = WORKSPACE_SIZE / 2;
+        const BASE_Y = WORKSPACE_SIZE / 2;
+        const RESOLUTION = 50; // Grid resolution for C-Space (50x50 = 2500 checks)
+
+        const workspaceCanvas = document.getElementById('workspaceCanvas');
+        const cspaceCanvas = document.getElementById('cspaceCanvas');
+        const ctxW = workspaceCanvas.getContext('2d');
+        const ctxC = cspaceCanvas.getContext('2d');
+        const statusMessage = document.getElementById('statusMessage');
+        const drawButton = document.getElementById('drawButton');
+        const calculateButton = document.getElementById('calculateButton');
+        const clearButton = document.getElementById('clearButton');
+        const theta1Display = document.getElementById('theta1Display');
+        const theta2Display = document.getElementById('theta2Display');
+        
+        const link1Input = document.getElementById('link1Length');
+        const link2Input = document.getElementById('link2Length');
+        const link1Label = document.getElementById('link1Label');
+        const link2Label = document.getElementById('link2Label');
+        
+        // New Angle Slider elements
+        const theta1Input = document.getElementById('theta1Input');
+        const theta2Input = document.getElementById('theta2Input');
+        const theta1InputLabel = document.getElementById('theta1InputLabel');
+        const theta2InputLabel = document.getElementById('theta2InputLabel');
+
+
+        let LINK_LENGTH_1 = parseInt(link1Input.value); 
+        let LINK_LENGTH_2 = parseInt(link2Input.value);
+
+        let isDrawing = false;
+        let obstacleVertices = [];
+        let cSpaceObstacle = []; // Array to store collision points (theta1, theta2)
+        // Initialize armConfig with angles in radians, default to (0,0)
+        let armConfig = { theta1: 0, theta2: 0, isColliding: false }; 
+
+        // --- UTILITY FUNCTIONS ---
+
+        /** Converts degrees to radians. */
+        const degToRad = (deg) => deg * (Math.PI / 180);
+        
+        /** * Converts the internal mathematical angle (in degrees, -180 to 180) 
+         * to the user's desired display convention (e.g., -90 -> 90, 90 -> 270).
+         * This appears to be a Clockwise 0-360 range representation.
+         * @param {number} internalDeg - Angle in degrees [-180, 180].
+         * @returns {number} Angle in degrees [0, 360) in the custom display convention.
+         */
+        function convertInternalDegToDisplay(internalDeg) {
+            // 1. Normalize the internal degree [-180, 180] to [0, 360]
+            let normalized = internalDeg;
+            if (normalized < 0) {
+                normalized += 360;
+            }
+            
+            // 2. Convert to CW angle (360 - normalized), with 360 becoming 0
+            let displayDeg = 360 - normalized;
+            if (displayDeg === 360) {
+                displayDeg = 0;
+            }
+            return displayDeg;
+        }
+
+
+        /** Converts C-Space angle (in radians) to Canvas coordinate (0-400). */
+        const angleToCoord = (angle) => (angle / Math.PI) * (CSPACE_SIZE / 2) + (CSPACE_SIZE / 2);
+        
+        /** Normalizes an angle to the range (-PI, PI] */
+        const normalizeAngle = (angle) => {
+            angle = angle % (2 * Math.PI);
+            if (angle <= -Math.PI) angle += (2 * Math.PI);
+            if (angle > Math.PI) angle -= (2 * Math.PI);
+            return angle;
+        };
+
+        /**
+         * Checks if a point is inside a polygon using the ray-casting algorithm.
+         * @param {object} p - Point {x, y}
+         * @param {array} polygon - Array of vertices [{x, y}, ...]
+         * @returns {boolean} True if point is inside.
+         */
+        function isPointInPolygon(p, polygon) {
+            let inside = false;
+            for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+                const xi = polygon[i].x, yi = polygon[i].y;
+                const xj = polygon[j].x, yj = polygon[j].y;
+
+                const intersect = ((yi > p.y) !== (yj > p.y)) &&
+                    (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
+                if (intersect) inside = !inside;
+            }
+            return inside;
+        }
+
+        /**
+         * Checks for collision between the 2-link arm and the obstacle polygon.
+         * Uses the current LINK_LENGTH_1 and LINK_LENGTH_2 values.
+         * @param {number} theta1 - Joint 1 angle (radians)
+         * @param {number} theta2 - Joint 2 angle (radians)
+         * @param {array} obstacle - Obstacle vertices
+         * @returns {boolean} True if collision occurs.
+         */
+        function checkCollision(theta1, theta2, obstacle) {
+            if (obstacle.length < 3) return false;
+
+            // 1. Forward Kinematics
+            // x1, y1 are the coordinates of the first joint (end of link 1)
+            const x1 = BASE_X + LINK_LENGTH_1 * Math.cos(theta1);
+            const y1 = BASE_Y + LINK_LENGTH_1 * Math.sin(theta1);
+            
+            // x2, y2 are the coordinates of the end effector (end of link 2)
+            // The angle for link 2 is (theta1 + theta2) because theta2 is relative to link1
+            const x2 = x1 + LINK_LENGTH_2 * Math.cos(theta1 + theta2);
+            const y2 = y1 + LINK_LENGTH_2 * Math.sin(theta1 + theta2);
+
+            const pointsToCheck = [
+                { x: x1, y: y1 },         // Joint 1
+                { x: x2, y: y2 },         // End Effector
+            ];
+
+            // Sample points along Link 1 and Link 2 for better collision detection
+            const numSamples = 3;
+            for (let i = 1; i <= numSamples; i++) {
+                const frac = i / (numSamples + 1);
+                // Link 1
+                pointsToCheck.push({
+                    x: BASE_X + LINK_LENGTH_1 * frac * Math.cos(theta1),
+                    y: BASE_Y + LINK_LENGTH_1 * frac * Math.sin(theta1)
+                });
+                // Link 2
+                pointsToCheck.push({
+                    x: x1 + LINK_LENGTH_2 * frac * Math.cos(theta1 + theta2),
+                    y: y1 + LINK_LENGTH_2 * frac * Math.sin(theta1 + theta2)
+                });
+            }
+
+            // 2. Collision Check
+            for (const p of pointsToCheck) {
+                if (isPointInPolygon(p, obstacle)) {
+                    return true; // Collision detected
+                }
+            }
+            return false;
+        }
+        
+        /**
+         * Calculates Inverse Kinematics (IK) for the 2-link arm (elbow down solution).
+         * Uses the current LINK_LENGTH_1 and LINK_LENGTH_2 values.
+         * @param {number} x - Target x-coordinate (Workspace)
+         * @param {number} y - Target y-coordinate (Workspace)
+         * @returns {object|null} {theta1, theta2} in radians, or null if unreachable.
+         */
+        function inverseKinematics(x, y) {
+            // Target coordinates relative to base (0,0)
+            const Px = x - BASE_X;
+            const Py = y - BASE_Y;
+            const L1 = LINK_LENGTH_1;
+            const L2 = LINK_LENGTH_2;
+
+            const D2 = Px * Px + Py * Py;
+            const D = Math.sqrt(D2);
+
+            // Check if target is out of reach
+            if (D > L1 + L2 || D < Math.abs(L1 - L2)) {
+                return null;
+            }
+
+            // Calculate theta2 (Elbow down solution)
+            // Law of Cosines to find c2
+            const c2 = (D2 - L1 * L1 - L2 * L2) / (2 * L1 * L2);
+            // Clamp c2 to [-1, 1] to prevent NaN from floating point errors
+            const c2_clamped = Math.max(-1, Math.min(1, c2)); 
+            const s2 = -Math.sqrt(1 - c2_clamped * c2_clamped); // Elbow down
+            const theta2 = Math.atan2(s2, c2_clamped); // This is the relative angle
+
+            // Calculate theta1
+            const gamma = Math.atan2(Py, Px);
+            // Law of Cosines to find angle phi (angle of L1 with respect to D)
+            const phi = Math.atan2(L2 * s2, L1 + L2 * c2_clamped); 
+            const theta1 = gamma - phi; // This is the absolute angle of link 1
+
+            return {
+                theta1: normalizeAngle(theta1),
+                theta2: normalizeAngle(theta2)
+            };
+        }
+
+        // --- RENDERING FUNCTIONS ---
+
+        /** Draws the 2-link arm in the workspace at a given configuration. */
+        function drawArm(theta1, theta2, color, lineWidth = 6) {
+            ctxW.save();
+            ctxW.beginPath();
+            ctxW.strokeStyle = color;
+            ctxW.lineWidth = lineWidth;
+            ctxW.lineCap = 'round';
+
+            // Joint 1 position (End of Link 1)
+            const x1 = BASE_X + LINK_LENGTH_1 * Math.cos(theta1);
+            const y1 = BASE_Y + LINK_LENGTH_1 * Math.sin(theta1);
+            
+            // Joint 2 position (End Effector)
+            // Angle for second link's orientation is theta1 + theta2 (relative)
+            const x2 = x1 + LINK_LENGTH_2 * Math.cos(theta1 + theta2);
+            const y2 = y1 + LINK_LENGTH_2 * Math.sin(theta1 + theta2);
+
+            // Link 1
+            ctxW.moveTo(BASE_X, BASE_Y);
+            ctxW.lineTo(x1, y1);
+            
+            // Link 2
+            ctxW.lineTo(x2, y2);
+            ctxW.stroke();
+
+            // Draw joints
+            ctxW.fillStyle = color; 
+            ctxW.beginPath();
+            ctxW.arc(BASE_X, BASE_Y, 7, 0, 2 * Math.PI); // Base joint
+            ctxW.fill();
+            ctxW.beginPath();
+            ctxW.arc(x1, y1, 7, 0, 2 * Math.PI); // Mid joint
+            ctxW.fill();
+            ctxW.beginPath();
+            ctxW.arc(x2, y2, 8, 0, 2 * Math.PI); // End effector
+            ctxW.fill();
+
+            ctxW.restore();
+        }
+
+        /** Redraws the entire workspace. */
+        function drawWorkspace() {
+            ctxW.clearRect(0, 0, WORKSPACE_SIZE, WORKSPACE_SIZE);
+
+            // Draw the obstacle
+            if (obstacleVertices.length > 0) {
+                ctxW.fillStyle = 'rgba(239, 68, 68, 0.7)'; // Red with transparency
+                ctxW.strokeStyle = '#dc2626';
+                ctxW.lineWidth = 2;
+
+                ctxW.beginPath();
+                ctxW.moveTo(obstacleVertices[0].x, obstacleVertices[0].y);
+                for (let i = 1; i < obstacleVertices.length; i++) {
+                    ctxW.lineTo(obstacleVertices[i].x, obstacleVertices[i].y);
+                }
+                ctxW.closePath();
+                ctxW.fill();
+                ctxW.stroke();
+                
+                // Draw vertices
+                ctxW.fillStyle = '#dc2626';
+                obstacleVertices.forEach(v => {
+                    ctxW.beginPath();
+                    ctxW.arc(v.x, v.y, 4, 0, 2 * Math.PI);
+                    ctxW.fill();
+                });
+            }
+
+            // Draw the robot arm dynamically
+            const armColor = armConfig.isColliding ? '#ef4444' : '#3b82f6';
+            if (armConfig.theta1 !== null) {
+                drawArm(armConfig.theta1, armConfig.theta2, armColor);
+            }
+        }
+
+        /** Draws the cursor point on the C-Space canvas. */
+        function drawCSpaceCursor() {
+            if (armConfig.theta1 === null) return;
+            
+            const x = angleToCoord(armConfig.theta1);
+            const y = angleToCoord(armConfig.theta2);
+
+            ctxC.save();
+            ctxC.fillStyle = armConfig.isColliding ? '#facc15' : '#22c55e'; // Yellow or Green highlight
+            
+            // Draw the cursor (large circle to stand out)
+            ctxC.beginPath();
+            ctxC.arc(x, y, 5, 0, 2 * Math.PI); 
+            ctxC.fill();
+            
+            ctxC.strokeStyle = '#000000';
+            ctxC.lineWidth = 1.5;
+            ctxC.stroke();
+            ctxC.restore();
+        }
+
+
+        /** Redraws the entire C-Space. */
+        function drawCSpace() {
+            ctxC.clearRect(0, 0, CSPACE_SIZE, CSPACE_SIZE);
+            
+            // Draw axes and labels
+            ctxC.strokeStyle = '#4b5563';
+            ctxC.lineWidth = 1;
+            ctxC.beginPath();
+            ctxC.moveTo(0, CSPACE_SIZE / 2); // Horizontal axis (theta2 = 0)
+            ctxC.lineTo(CSPACE_SIZE, CSPACE_SIZE / 2);
+            ctxC.moveTo(CSPACE_SIZE / 2, 0); // Vertical axis (theta1 = 0)
+            ctxC.lineTo(CSPACE_SIZE / 2, CSPACE_SIZE);
+            ctxC.stroke();
+
+            ctxC.fillStyle = '#4b5563';
+            ctxC.font = '12px Inter';
+            ctxC.textAlign = 'center';
+            ctxC.fillText('θ₁ (rad)', CSPACE_SIZE - 20, CSPACE_SIZE / 2 + 15);
+            ctxC.fillText('θ₂ (rad)', CSPACE_SIZE / 2, 10);
+            ctxC.fillText('-π', 10, CSPACE_SIZE / 2 + 15);
+            ctxC.fillText('π', CSPACE_SIZE - 10, CSPACE_SIZE / 2 + 15);
+            ctxC.fillText('π', CSPACE_SIZE / 2, 15);
+            ctxC.fillText('-π', CSPACE_SIZE / 2, CSPACE_SIZE - 5);
+
+
+            // Draw C-Space obstacle (C-Obstacle)
+            ctxC.fillStyle = '#dc2626'; // Red for forbidden region
+            cSpaceObstacle.forEach(p => {
+                const x = angleToCoord(p.theta1);
+                const y = angleToCoord(p.theta2);
+
+                // Draw a small square for the forbidden region
+                const pixelSize = CSPACE_SIZE / RESOLUTION;
+                ctxC.fillRect(x - pixelSize/2, y - pixelSize/2, pixelSize, pixelSize);
+            });
+
+            // Draw the interactive cursor *after* the C-Obstacle
+            drawCSpaceCursor();
+        }
+
+        // --- EVENT HANDLERS ---
+
+        /** Handles link length changes. */
+        function handleLinkLengthChange() {
+            LINK_LENGTH_1 = parseInt(link1Input.value);
+            LINK_LENGTH_2 = parseInt(link2Input.value);
+            link1Label.textContent = `Link 1 Length: ${LINK_LENGTH_1} px`;
+            link2Label.textContent = `Link 2 Length: ${LINK_LENGTH_2} px`;
+
+            // If the obstacle is drawn, we need to clear the old C-Space and force a recalculation
+            if (obstacleVertices.length > 0) {
+                cSpaceObstacle = [];
+                calculateButton.disabled = false;
+                statusMessage.textContent = 'Link lengths changed! Click "Calculate C-Space" to re-generate the map.';
+            }
+
+            // Redraw everything to reflect new arm dimensions
+            drawWorkspace();
+            drawCSpace();
+        }
+        
+        /** Handles direct angle changes via sliders. */
+        function handleAngleChange() {
+            const internalDeg1 = parseInt(theta1Input.value);
+            const internalDeg2 = parseInt(theta2Input.value);
+            
+            // Convert internal degrees to the custom display convention
+            const displayDeg1 = convertInternalDegToDisplay(internalDeg1);
+            const displayDeg2 = convertInternalDegToDisplay(internalDeg2);
+
+            // Update labels
+            theta1InputLabel.textContent = `Theta 1 (θ₁): ${internalDeg1}° (Slider value)`;
+            theta2InputLabel.textContent = `Theta 2 (θ₂): ${internalDeg2}° (Slider value)`;
+
+            // Set arm configuration using the slider values (converted to radians)
+            armConfig.theta1 = degToRad(internalDeg1);
+            armConfig.theta2 = degToRad(internalDeg2); // This is correctly interpreted as relative
+
+            // Check collision for the current configuration
+            armConfig.isColliding = checkCollision(armConfig.theta1, armConfig.theta2, obstacleVertices);
+
+            // Update angle display text using the custom display degrees
+            theta1Display.textContent = `θ₁: ${armConfig.theta1.toFixed(3)} rad (${displayDeg1}°)`;
+            theta2Display.textContent = `θ₂: ${armConfig.theta2.toFixed(3)} rad (${displayDeg2}°)`;
+
+            // Redraw
+            drawWorkspace();
+            drawCSpace();
+        }
+
+
+        /** Handles clicks for drawing the obstacle. */
+        function handleWorkspaceClick(event) {
+            if (!isDrawing) return;
+
+            const rect = workspaceCanvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            obstacleVertices.push({ x, y });
+            drawWorkspace(); // Redraw the polygon
+        }
+        
+        /** Handles mouse movement for arm control (Inverse Kinematics). */
+        function handleWorkspaceMove(event) {
+            if (isDrawing) return;
+            
+            const rect = workspaceCanvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            // Calculate IK
+            const ikResult = inverseKinematics(x, y);
+            
+            if (ikResult) {
+                armConfig.theta1 = ikResult.theta1;
+                armConfig.theta2 = ikResult.theta2;
+
+                // Check collision for the current configuration
+                armConfig.isColliding = checkCollision(armConfig.theta1, armConfig.theta2, obstacleVertices);
+                
+                // Get internal degrees for display synchronization
+                const internalDeg1 = Math.round(armConfig.theta1 * 180 / Math.PI);
+                const internalDeg2 = Math.round(armConfig.theta2 * 180 / Math.PI); 
+                
+                // Convert internal degrees to the custom display convention
+                const displayDeg1 = convertInternalDegToDisplay(internalDeg1);
+                const displayDeg2 = convertInternalDegToDisplay(internalDeg2);
+
+                // Update text display using custom degrees
+                theta1Display.textContent = `θ₁: ${armConfig.theta1.toFixed(3)} rad (${displayDeg1}°)`;
+                theta2Display.textContent = `θ₂: ${armConfig.theta2.toFixed(3)} rad (${displayDeg2}°)`;
+                
+                // Update angle slider values and their labels (these must reflect the internal kinematic angle)
+                theta1Input.value = internalDeg1;
+                theta2Input.value = internalDeg2;
+                theta1InputLabel.textContent = `Theta 1 (θ₁): ${internalDeg1}° (Slider value)`;
+                theta2InputLabel.textContent = `Theta 2 (θ₂): ${internalDeg2}° (Slider value)`;
+
+            } else {
+                // Out of reach
+                armConfig.theta1 = null;
+                armConfig.theta2 = null;
+                armConfig.isColliding = false;
+                theta1Display.textContent = `θ₁: Out of Reach`;
+                theta2Display.textContent = `θ₂: Out of Reach`;
+            }
+            
+            // Redraw everything
+            drawWorkspace();
+            drawCSpace();
+        }
+
+
+        /** Calculates the C-Space obstacle. */
+        function calculateCSpace() {
+            if (obstacleVertices.length < 3) {
+                statusMessage.textContent = 'Please draw an obstacle with at least 3 points (double-click to finish).';
+                return;
+            }
+
+            // Disable buttons and show loading status
+            calculateButton.disabled = true;
+            statusMessage.textContent = `Calculating C-Space for L1=${LINK_LENGTH_1} L2=${LINK_LENGTH_2}... Please wait.`;
+            cSpaceObstacle = [];
+
+            // Use a timeout to release the UI thread, allowing the status message to update
+            setTimeout(() => {
+                const step = (2 * Math.PI) / RESOLUTION; // Iterate from -PI to PI
+                let collisionsFound = 0;
+                
+                for (let i = 0; i <= RESOLUTION; i++) {
+                    const theta1 = -Math.PI + i * step; // -π to π
+                    for (let j = 0; j <= RESOLUTION; j++) {
+                        const theta2 = -Math.PI + j * step; // -π to π
+                        
+                        // Check collision using the kinematic convention: theta1 (absolute), theta2 (relative)
+                        if (checkCollision(theta1, theta2, obstacleVertices)) {
+                            cSpaceObstacle.push({ theta1, theta2 });
+                            collisionsFound++;
+                        }
+                    }
+                }
+
+                drawCSpace(); // Draw the results
+                calculateButton.disabled = false;
+                statusMessage.textContent = `Calculation complete! Found ${collisionsFound} forbidden configurations (red pixels). Move your mouse or use the angle sliders to explore!`;
+            }, 50); // Small delay
+        }
+
+        /** Clears the workspace and C-Space. */
+        function clearAll() {
+            isDrawing = false;
+            obstacleVertices = [];
+            cSpaceObstacle = [];
+            
+            // Reset arm config and slider values to (0,0)
+            armConfig = { theta1: 0, theta2: 0, isColliding: false };
+            theta1Input.value = 0;
+            theta2Input.value = 0;
+            
+            handleAngleChange(); // Update labels and redraw based on default (0,0)
+            
+            calculateButton.disabled = true;
+            drawButton.disabled = false;
+            statusMessage.textContent = 'Workspace and C-Space cleared. Click "Start Drawing Obstacle" to begin.';
+        }
+
+        // --- INITIALIZATION ---
+
+        // Event Listeners for Sliders
+        link1Input.addEventListener('input', handleLinkLengthChange);
+        link2Input.addEventListener('input', handleLinkLengthChange);
+        theta1Input.addEventListener('input', handleAngleChange); 
+        theta2Input.addEventListener('input', handleAngleChange); 
+
+
+        drawButton.addEventListener('click', () => {
+            isDrawing = true;
+            obstacleVertices = []; // Start a new obstacle
+            drawWorkspace();
+            cSpaceObstacle = []; // Clear old results when starting new draw
+            drawCSpace();
+            calculateButton.disabled = true;
+            drawButton.disabled = true;
+            statusMessage.textContent = 'Drawing Mode: Click to add vertices. Double-click when finished.';
+        });
+
+        workspaceCanvas.addEventListener('click', handleWorkspaceClick);
+        workspaceCanvas.addEventListener('mousemove', handleWorkspaceMove); 
+        workspaceCanvas.addEventListener('touchmove', (e) => {
+            e.preventDefault(); // Prevent scrolling
+            const touch = e.touches[0];
+            handleWorkspaceMove(touch);
+        });
+
+        workspaceCanvas.addEventListener('dblclick', () => {
+            if (isDrawing && obstacleVertices.length >= 3) {
+                isDrawing = false;
+                calculateButton.disabled = false;
+                drawButton.disabled = false;
+                statusMessage.textContent = 'Obstacle finished. Click "Calculate C-Space" to see the results.';
+            } else if (isDrawing && obstacleVertices.length < 3) {
+                statusMessage.textContent = 'Obstacle must have at least 3 vertices (click more points).';
+            }
+        });
+
+        calculateButton.addEventListener('click', calculateCSpace);
+        clearButton.addEventListener('click', clearAll);
+
+        // Initial setup
+        handleLinkLengthChange(); // Set initial link lengths and update labels
+        handleAngleChange();      // Set initial angles (0,0) and draw the arm, update labels
+
+    </script>
+</body>
+</html>
